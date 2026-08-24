@@ -1,5 +1,5 @@
 """
-Mixed Language STT (Roman Urdu + English) – FINAL CORRECTED
+Mixed Language STT (Urdu + English) – FINAL: Handles Low Voice + Roman Correction
 """
 import io
 import os
@@ -44,16 +44,16 @@ if not DEEPGRAM_API_KEY:
     st.stop()
 
 # ============================
-# 🧠 STRICT VAD (NO HALLUCINATION)
+# 🧠 ADAPTIVE VAD (LOW VOICE FRIENDLY)
 # ============================
 class VoiceActivityDetector:
     def __init__(self, sample_rate=16000):
         self.sample_rate = sample_rate
         self.frame_duration_ms = 20
         self.frame_size = int(sample_rate * self.frame_duration_ms / 1000)
-        self.speech_floor_db = 38
+        self.speech_floor_db = 30  # 👈 LOWERED from 38 to 30
         self.vad_history = deque(maxlen=15)
-        self.min_speech_frames = 5
+        self.min_speech_frames = 3   # 👈 LOWERED from 5 to 3
 
     def is_speech(self, audio_chunk, current_noise_floor=None):
         rms = np.sqrt(np.mean(audio_chunk.astype(np.float64) ** 2) + 1e-10)
@@ -61,15 +61,17 @@ class VoiceActivityDetector:
         zcr = np.sum(np.abs(np.diff(np.sign(audio_chunk)))) / (2 * len(audio_chunk) + 1e-10)
         
         if current_noise_floor is not None:
-            speech_threshold = current_noise_floor + 18.0
+            # 👈 LOWERED from 18 to 12 to allow low voice
+            speech_threshold = current_noise_floor + 12.0
         else:
             speech_threshold = self.speech_floor_db
         
-        speech = (energy_db > speech_threshold) and (energy_db > -35) and (0.01 < zcr < 0.6)
+        # 👈 LOWERED energy floor from -35 to -45
+        speech = (energy_db > speech_threshold) and (energy_db > -45) and (0.01 < zcr < 0.6)
         
         self.vad_history.append(speech)
         if len(self.vad_history) > self.min_speech_frames:
-            return sum(self.vad_history) / len(self.vad_history) > 0.6
+            return sum(self.vad_history) / len(self.vad_history) > 0.5  # 👈 LOWERED from 0.6 to 0.5
         return speech
 
 # ============================
@@ -98,7 +100,7 @@ class SpeakerPrioritizer:
         rms = np.sqrt(np.mean(audio_chunk.astype(np.float64) ** 2) + 1e-10)
         if self.primary_energy_profile is None:
             return True
-        tolerance = self.primary_energy_profile * 0.5
+        tolerance = self.primary_energy_profile * 0.6
         return abs(rms - self.primary_energy_profile) < tolerance
 
 # ============================
@@ -127,54 +129,49 @@ class AdaptiveNoiseGate:
         return audio_chunk
 
 # ============================
-# 🌀 CORRECT ROMAN URDU ERRORS (FIXES "wh" -> "woh")
+# 🌀 CORRECT ROMAN URDU ERRORS
 # ============================
 def correct_roman_urdu(text):
-    """Fix common mis-hearings from Deepgram when using Urdu language."""
     if not text:
         return text
     
-    # Split into words to handle boundaries
     words = text.split()
     corrected_words = []
     
     for word in words:
         w = word.lower()
         
-        # Mapping: misheard English phonetics -> Correct Roman Urdu
-        # "wh" -> "woh" (classic case)
+        # Direct mapping for common mishearings
         if w == "wh" or w == "w h":
             corrected_words.append("woh")
         elif w == "hve":
             corrected_words.append("have")
         elif w == "hv" or w == "h v":
             corrected_words.append("have")
-        elif w == "sNgiitaa":
+        elif w == "sNgiitaa" or w == "sngiitaa":
             corrected_words.append("sangita")
         elif w == "tbhii":
             corrected_words.append("tab hi")
         elif w == "tbh":
             corrected_words.append("tab")
-        # General rule: if word starts with "wh" and is 2-3 letters, it's usually "woh"
+        elif w == "hylw":
+            corrected_words.append("hello")
         elif w.startswith("wh") and len(w) <= 4:
             corrected_words.append("woh")
         else:
             corrected_words.append(word)
     
-    # Join back and fix extra spaces around punctuations
     text = " ".join(corrected_words)
-    # Clean multiple spaces
     text = re.sub(r'\s+', ' ', text)
     return text.strip()
 
 # ============================
-# 🎙️ DEEPGRAM TRANSCRIPTION (FORCED URDU LANGUAGE)
+# 🎙️ DEEPGRAM TRANSCRIPTION
 # ============================
 def transcribe_deepgram(audio_bytes):
-    # 🔥 FIX: Forced "ur" language so it doesn't mishear "woh" as "wh"
     params = [
         ("model", "nova-3"),
-        ("language", "ur"),           # 👈 CRITICAL FIX: Urdu language model
+        ("language", "ur"),
         ("smart_format", "true"),
         ("punctuate", "true"),
         ("utterances", "true"),
@@ -200,6 +197,14 @@ def transcribe_deepgram(audio_bytes):
         transcript = alt.get("transcript", "").strip()
         confidence = float(alt.get("confidence", 0.0))
         words = alt.get("words", [])
+        
+        # 👈 If confidence is very low, don't show gibberish
+        if confidence < 0.35:
+            return {
+                "text": "[audio unclear]",
+                "confidence": confidence,
+                "words": words
+            }
         
         # Word-level confidence filtering (threshold 0.25)
         if words:
@@ -231,7 +236,7 @@ def transcribe_deepgram(audio_bytes):
                         "words": words
                     }
         
-        # 🔥 FINAL FIX: Apply Roman Urdu correction to fix "wh" -> "woh" etc.
+        # Apply Roman Urdu correction
         transcript = correct_roman_urdu(transcript)
         
         return {
@@ -243,19 +248,22 @@ def transcribe_deepgram(audio_bytes):
         return None
 
 # ============================
-# 🌐 ROMANIZATION
+# 🌐 ROMANIZATION (WITH GUARD)
 # ============================
 def romanize_text(text):
     if not text:
         return ""
     if UNIDECODE_AVAILABLE:
-        # Unidecode converts Arabic script to Roman (e.g., "وہ" -> "woh")
-        return unidecode(text)
+        roman = unidecode(text)
+        # 👈 If romanization looks like gibberish (too short or random), return original
+        if len(roman) < 3 or re.search(r'[^\w\s]', roman):
+            return text
+        return roman
     else:
         return re.sub(r'[^a-zA-Z0-9 .,\'"?!]', '', text)
 
 # ============================
-# 🎛️ PROCESS AUDIO (STRICT GATE)
+# 🎛️ PROCESS AUDIO
 # ============================
 def process_audio(audio_bytes):
     try:
@@ -281,7 +289,7 @@ def process_audio(audio_bytes):
                 if speaker.is_primary_speaker(frame):
                     suppressed = noise_gate.suppress(frame)
                     rms = np.sqrt(np.mean(suppressed.astype(np.float64) ** 2) + 1e-10)
-                    if rms > 200:
+                    if rms > 150:  # 👈 LOWERED from 200 to 150
                         processed.append(suppressed)
                     else:
                         processed.append(frame)
@@ -301,7 +309,7 @@ def process_audio(audio_bytes):
 # 🖥️ UI
 # ============================
 st.title("🎤 Mixed Language STT (Urdu + English)")
-st.caption("Fully corrected: 'woh' sunega, 'wh' nahi likhega.")
+st.caption("Fully corrected: low voice now transcribes correctly.")
 
 show_roman = st.checkbox("Show Romanized text", value=True)
 
@@ -324,8 +332,7 @@ if audio and audio.get("bytes"):
             if trans:
                 original = trans["text"]
                 
-                # Romanization step (if checkbox is checked)
-                if show_roman:
+                if show_roman and original != "[audio unclear]":
                     roman = romanize_text(original)
                 else:
                     roman = ""
@@ -334,10 +341,10 @@ if audio and audio.get("bytes"):
                 st.write("**Original Script:**")
                 st.code(original, language="text")
 
-                if show_roman and roman:
+                if show_roman and roman and roman != original:
                     st.write("**Roman Urdu:**")
                     st.code(roman, language="text")
 
                 st.caption(f"Confidence: {trans['confidence']:.2f}")
             else:
-                st.warning("No clear speech detected. Please speak louder/closer to mic.")
+                st.warning("No clear speech detected. Please speak closer to mic.")
