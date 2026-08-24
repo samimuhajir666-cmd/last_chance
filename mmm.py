@@ -1,5 +1,5 @@
 """
-Mixed Language STT (Urdu + English) – FINAL FIX: Higher Confidence Threshold
+Mixed Language STT (Urdu + English) – FINAL FIXED
 """
 import io
 import os
@@ -44,7 +44,7 @@ if not DEEPGRAM_API_KEY:
     st.stop()
 
 # ============================
-# 🧠 STRICT VAD (NO HALLUCINATION)
+# 🧠 ADAPTIVE VAD (LOW VOICE FRIENDLY)
 # ============================
 class VoiceActivityDetector:
     def __init__(self, sample_rate=16000):
@@ -61,11 +61,13 @@ class VoiceActivityDetector:
         zcr = np.sum(np.abs(np.diff(np.sign(audio_chunk)))) / (2 * len(audio_chunk) + 1e-10)
         
         if current_noise_floor is not None:
-            speech_threshold = current_noise_floor + 12.0
+            # 🔥 FIX 4: Lowered dynamic offset to 8 dB (was 12)
+            speech_threshold = current_noise_floor + 8.0
         else:
             speech_threshold = self.speech_floor_db
         
         speech = (energy_db > speech_threshold) and (energy_db > -45) and (0.01 < zcr < 0.6)
+        
         self.vad_history.append(speech)
         if len(self.vad_history) > self.min_speech_frames:
             return sum(self.vad_history) / len(self.vad_history) > 0.5
@@ -137,6 +139,7 @@ def correct_roman_urdu(text):
     
     for word in words:
         w = word.lower()
+        
         if w == "wh" or w == "w h":
             corrected_words.append("woh")
         elif w == "hve":
@@ -161,7 +164,7 @@ def correct_roman_urdu(text):
     return text.strip()
 
 # ============================
-# 🎙️ DEEPGRAM TRANSCRIPTION (FIXED: HIGHER CONFIDENCE THRESHOLDS)
+# 🎙️ DEEPGRAM TRANSCRIPTION – WITH FIXED THRESHOLDS
 # ============================
 def transcribe_deepgram(audio_bytes):
     params = [
@@ -193,28 +196,29 @@ def transcribe_deepgram(audio_bytes):
         confidence = float(alt.get("confidence", 0.0))
         words = alt.get("words", [])
         
-        # 🔥 FIX 1: Overall confidence threshold increased to 0.65
-        if confidence < 0.65:
+        # 🔥 FIX 1: Lowered overall confidence gate to 0.20 (was 0.35)
+        if confidence < 0.20:
             return {
                 "text": "[audio unclear]",
                 "confidence": confidence,
                 "words": words
             }
         
-        # 🔥 FIX 2: Word confidence threshold increased to 0.35
+        # Word-level confidence filtering
         if words:
             filtered_words = []
             garbage_count = 0
             for w in words:
                 word = w.get("word", "").strip()
                 word_conf = float(w.get("confidence", 0.0))
-                if word_conf < 0.35:
+                # 🔥 FIX 2: Lowered word confidence threshold to 0.15 (was 0.25)
+                if word_conf < 0.15:
                     filtered_words.append("[inaudible]")
                     garbage_count += 1
                 else:
                     filtered_words.append(word)
             
-            if words and (garbage_count / len(words)) > 0.4:
+            if words and (garbage_count / len(words)) > 0.6:
                 return {
                     "text": "[audio unclear]",
                     "confidence": confidence,
@@ -242,7 +246,7 @@ def transcribe_deepgram(audio_bytes):
         return None
 
 # ============================
-# 🌐 ROMANIZATION (WITH GUARD)
+# 🌐 ROMANIZATION
 # ============================
 def romanize_text(text):
     if not text:
@@ -256,7 +260,7 @@ def romanize_text(text):
         return re.sub(r'[^a-zA-Z0-9 .,\'"?!]', '', text)
 
 # ============================
-# 🎛️ PROCESS AUDIO
+# 🎛️ PROCESS AUDIO – WITH FIXED AMPLITUDE GATE
 # ============================
 def process_audio(audio_bytes):
     try:
@@ -282,7 +286,8 @@ def process_audio(audio_bytes):
                 if speaker.is_primary_speaker(frame):
                     suppressed = noise_gate.suppress(frame)
                     rms = np.sqrt(np.mean(suppressed.astype(np.float64) ** 2) + 1e-10)
-                    if rms > 150:
+                    # 🔥 FIX 3: Lowered RMS gate to 80 (was 150)
+                    if rms > 80:
                         processed.append(suppressed)
                     else:
                         processed.append(frame)
@@ -302,7 +307,7 @@ def process_audio(audio_bytes):
 # 🖥️ UI
 # ============================
 st.title("🎤 Mixed Language STT (Urdu + English)")
-st.caption("Fully corrected: high confidence only, no hallucination.")
+st.caption("Now works for both low and normal voice.")
 
 show_roman = st.checkbox("Show Romanized text", value=True)
 
