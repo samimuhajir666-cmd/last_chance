@@ -12,7 +12,6 @@ from dotenv import load_dotenv
 from streamlit_mic_recorder import mic_recorder
 from collections import deque
 
-# Optional romanization
 try:
     from unidecode import unidecode
     UNIDECODE_AVAILABLE = True
@@ -120,7 +119,7 @@ class AdaptiveNoiseGate:
         return audio_chunk
 
 # ============================
-# 🎙️ DEEPGRAM TRANSCRIPTION
+# 🎙️ DEEPGRAM TRANSCRIPTION (FIXED)
 # ============================
 def transcribe_deepgram(audio_bytes):
     params = [
@@ -147,9 +146,32 @@ def transcribe_deepgram(audio_bytes):
             return None
         data = resp.json()
         alt = data.get("results", {}).get("channels", [{}])[0].get("alternatives", [{}])[0]
+        
+        transcript = alt.get("transcript", "").strip()
+        confidence = float(alt.get("confidence", 0.0))
+        words = alt.get("words", [])
+        
+        # 🔥 FIX: Filter out low-confidence words to stop hallucination
+        if words:
+            filtered = []
+            for w in words:
+                word = w.get("word", "").strip()
+                word_conf = float(w.get("confidence", 0.0))
+                # If the word is guessed with low confidence, replace it
+                if word_conf < 0.3:
+                    filtered.append("[inaudible]")
+                else:
+                    filtered.append(word)
+            if filtered:
+                transcript = " ".join(filtered)
+                # If the whole thing became blank, keep [inaudible]
+                if not transcript.strip():
+                    transcript = "[inaudible]"
+        
         return {
-            "text": alt.get("transcript", "").strip(),
-            "confidence": float(alt.get("confidence", 0.0))
+            "text": transcript,
+            "confidence": confidence,
+            "words": words
         }
     except Exception:
         return None
@@ -198,7 +220,7 @@ def process_audio(audio_bytes):
         return None
 
 # ============================
-# 🖥️ UI
+# 🖥️ UI (Original, No Extra Features)
 # ============================
 st.title("🎤 Mixed Language STT (Urdu + English)")
 st.caption("Speak naturally. Output in original script + Roman Urdu.")
