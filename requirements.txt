@@ -1,0 +1,7 @@
+streamlit
+streamlit-mic-recorder
+groq
+requests
+numpy
+scipy
+python-dotenv
