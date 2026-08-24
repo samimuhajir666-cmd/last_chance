@@ -1,7 +1,3 @@
-"""
-👂 HUMAN-LIKE SPEECH-TO-TEXT AGENT (NO LIBROSA)
-"""
-
 import html
 import io
 import os
@@ -14,14 +10,14 @@ from dotenv import load_dotenv
 from groq import Groq
 from streamlit_mic_recorder import mic_recorder
 from collections import deque
+from unidecode import unidecode
 
 load_dotenv()
 
 st.set_page_config(
-    page_title="Human-Like Speech Agent",
-    page_icon="👂",
-    layout="wide",
-    initial_sidebar_state="collapsed"
+    page_title="Mixed Language STT (Roman Urdu + English)",
+    page_icon="🎤",
+    layout="wide"
 )
 
 # ============================
@@ -44,7 +40,7 @@ if not DEEPGRAM_API_KEY:
     st.stop()
 
 # ============================
-# 🧠 VAD (Energy + ZCR based, no librosa)
+# 🧠 VAD (No librosa)
 # ============================
 class VoiceActivityDetector:
     def __init__(self, sample_rate=16000):
@@ -58,7 +54,6 @@ class VoiceActivityDetector:
         rms = np.sqrt(np.mean(audio_chunk.astype(np.float64) ** 2) + 1e-10)
         energy_db = 20 * np.log10(rms / 32768.0 + 1e-10)
         zcr = np.sum(np.abs(np.diff(np.sign(audio_chunk)))) / (2 * len(audio_chunk) + 1e-10)
-        # Speech if energy high and zcr in typical speech range
         speech = energy_db > self.speech_floor_db and 0.01 < zcr < 0.6
         self.vad_history.append(speech)
         if len(self.vad_history) > 10:
@@ -66,7 +61,7 @@ class VoiceActivityDetector:
         return speech
 
 # ============================
-# 🗣️ SPEAKER PRIORITIZER (simplified)
+# 🗣️ SIMPLIFIED SPEAKER PRIORITIZER
 # ============================
 class SpeakerPrioritizer:
     def __init__(self):
@@ -120,24 +115,61 @@ class AdaptiveNoiseGate:
         return audio_chunk
 
 # ============================
-# 📝 TRANSCRIPTION
+# 🎙️ DEEPGRAM TRANSCRIPTION (MIXED LANGUAGE)
 # ============================
-def transcribe_deepgram(audio_bytes, lang="ur"):
-    params = [("model", "nova-3"), ("language", lang), ("smart_format", "true"),
-              ("punctuate", "true"), ("utterances", "true"), ("numerals", "true")]
-    headers = {"Authorization": f"Token {DEEPGRAM_API_KEY}", "Content-Type": "audio/wav"}
+def transcribe_deepgram(audio_bytes):
+    """
+    Use Deepgram Nova-3 with multi-language detection.
+    Returns original script (Arabic for Urdu) and confidence.
+    """
+    params = [
+        ("model", "nova-3"),
+        ("language", "multi"),          # 👈 Auto-detect Urdu/English/Mixed
+        ("smart_format", "true"),
+        ("punctuate", "true"),
+        ("utterances", "true"),
+        ("numerals", "true"),
+    ]
+    headers = {
+        "Authorization": f"Token {DEEPGRAM_API_KEY}",
+        "Content-Type": "audio/wav",
+    }
     try:
-        r = requests.post("https://api.deepgram.com/v1/listen", params=params, headers=headers, data=audio_bytes, timeout=60)
-        if r.status_code != 200:
+        resp = requests.post(
+            "https://api.deepgram.com/v1/listen",
+            params=params,
+            headers=headers,
+            data=audio_bytes,
+            timeout=60,
+        )
+        if resp.status_code != 200:
             return None
-        data = r.json()
+        data = resp.json()
         alt = data.get("results", {}).get("channels", [{}])[0].get("alternatives", [{}])[0]
-        return {"text": alt.get("transcript", "").strip(), "confidence": float(alt.get("confidence", 0.0))}
+        return {
+            "text": alt.get("transcript", "").strip(),
+            "confidence": float(alt.get("confidence", 0.0))
+        }
     except Exception:
         return None
 
 # ============================
-# 🎛️ PROCESS AUDIO
+# 🌐 ROMANIZATION (Arabic Script → Roman Urdu)
+# ============================
+def romanize(text):
+    """
+    Convert Arabic-script text to Roman Urdu using unidecode.
+    This is a rough transliteration; for better results you can use
+    a dedicated library like indic-transliteration.
+    """
+    if not text:
+        return ""
+    # unidecode converts Arabic script to Latin (e.g., "آپ" -> "ap")
+    # It's not perfect for Urdu, but works for basic Roman Urdu.
+    return unidecode(text)
+
+# ============================
+# 🎛️ PROCESS AUDIO (Same as before)
 # ============================
 def process_audio(audio_bytes):
     try:
@@ -171,19 +203,37 @@ def process_audio(audio_bytes):
 # ============================
 # 🖥️ UI
 # ============================
-st.title("👂 Human-Like STT (No Librosa)")
-st.caption("Uses energy+VAD — no external dependencies")
+st.title("🎤 Mixed Language STT (Roman Urdu + English)")
+st.caption("Speak in Urdu, English, or mix — transcription in original script + Roman Urdu")
 
-audio = mic_recorder(start_prompt="🎤 Start", stop_prompt="⏹️ Stop", just_once=True, format="wav", key="mic")
-lang = st.selectbox("Language", ["ur", "en", "hi"], index=0)
+audio = mic_recorder(
+    start_prompt="🎤 Start Speaking",
+    stop_prompt="⏹️ Stop",
+    just_once=True,
+    format="wav",
+    key="mic"
+)
+
+if st.button("🗑️ Clear"):
+    st.rerun()
 
 if audio and audio.get("bytes"):
     with st.spinner("Processing..."):
         res = process_audio(audio["bytes"])
         if res:
-            trans = transcribe_deepgram(res["processed_bytes"], lang)
+            trans = transcribe_deepgram(res["processed_bytes"])
             if trans:
-                st.success(f"✅ {trans['text']}")
-                st.caption(f"Confidence: {trans['confidence']:.2f}")
+                original = trans["text"]
+                roman = romanize(original)
+                confidence = trans["confidence"]
+
+                st.success("✅ Transcription complete")
+                st.markdown("### 📝 Original Script (Arabic/Urdu)")
+                st.code(original, language="text")
+
+                st.markdown("### 📝 Romanized (Roman Urdu)")
+                st.code(roman, language="text")
+
+                st.caption(f"Confidence: {confidence:.2f}")
             else:
-                st.warning("No speech detected")
+                st.warning("No speech detected or transcription failed")
