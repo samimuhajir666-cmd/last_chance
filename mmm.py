@@ -1,5 +1,5 @@
 """
-Mixed Language STT (Urdu + English) – FINAL: Handles Low Voice + Roman Correction
+Mixed Language STT (Urdu + English) – FINAL FIX: Higher Confidence Threshold
 """
 import io
 import os
@@ -44,16 +44,16 @@ if not DEEPGRAM_API_KEY:
     st.stop()
 
 # ============================
-# 🧠 ADAPTIVE VAD (LOW VOICE FRIENDLY)
+# 🧠 STRICT VAD (NO HALLUCINATION)
 # ============================
 class VoiceActivityDetector:
     def __init__(self, sample_rate=16000):
         self.sample_rate = sample_rate
         self.frame_duration_ms = 20
         self.frame_size = int(sample_rate * self.frame_duration_ms / 1000)
-        self.speech_floor_db = 30  # 👈 LOWERED from 38 to 30
+        self.speech_floor_db = 30
         self.vad_history = deque(maxlen=15)
-        self.min_speech_frames = 3   # 👈 LOWERED from 5 to 3
+        self.min_speech_frames = 3
 
     def is_speech(self, audio_chunk, current_noise_floor=None):
         rms = np.sqrt(np.mean(audio_chunk.astype(np.float64) ** 2) + 1e-10)
@@ -61,17 +61,14 @@ class VoiceActivityDetector:
         zcr = np.sum(np.abs(np.diff(np.sign(audio_chunk)))) / (2 * len(audio_chunk) + 1e-10)
         
         if current_noise_floor is not None:
-            # 👈 LOWERED from 18 to 12 to allow low voice
             speech_threshold = current_noise_floor + 12.0
         else:
             speech_threshold = self.speech_floor_db
         
-        # 👈 LOWERED energy floor from -35 to -45
         speech = (energy_db > speech_threshold) and (energy_db > -45) and (0.01 < zcr < 0.6)
-        
         self.vad_history.append(speech)
         if len(self.vad_history) > self.min_speech_frames:
-            return sum(self.vad_history) / len(self.vad_history) > 0.5  # 👈 LOWERED from 0.6 to 0.5
+            return sum(self.vad_history) / len(self.vad_history) > 0.5
         return speech
 
 # ============================
@@ -140,8 +137,6 @@ def correct_roman_urdu(text):
     
     for word in words:
         w = word.lower()
-        
-        # Direct mapping for common mishearings
         if w == "wh" or w == "w h":
             corrected_words.append("woh")
         elif w == "hve":
@@ -166,7 +161,7 @@ def correct_roman_urdu(text):
     return text.strip()
 
 # ============================
-# 🎙️ DEEPGRAM TRANSCRIPTION
+# 🎙️ DEEPGRAM TRANSCRIPTION (FIXED: HIGHER CONFIDENCE THRESHOLDS)
 # ============================
 def transcribe_deepgram(audio_bytes):
     params = [
@@ -198,28 +193,28 @@ def transcribe_deepgram(audio_bytes):
         confidence = float(alt.get("confidence", 0.0))
         words = alt.get("words", [])
         
-        # 👈 If confidence is very low, don't show gibberish
-        if confidence < 0.35:
+        # 🔥 FIX 1: Overall confidence threshold increased to 0.65
+        if confidence < 0.65:
             return {
                 "text": "[audio unclear]",
                 "confidence": confidence,
                 "words": words
             }
         
-        # Word-level confidence filtering (threshold 0.25)
+        # 🔥 FIX 2: Word confidence threshold increased to 0.35
         if words:
             filtered_words = []
             garbage_count = 0
             for w in words:
                 word = w.get("word", "").strip()
                 word_conf = float(w.get("confidence", 0.0))
-                if word_conf < 0.25:
+                if word_conf < 0.35:
                     filtered_words.append("[inaudible]")
                     garbage_count += 1
                 else:
                     filtered_words.append(word)
             
-            if words and (garbage_count / len(words)) > 0.5:
+            if words and (garbage_count / len(words)) > 0.4:
                 return {
                     "text": "[audio unclear]",
                     "confidence": confidence,
@@ -236,7 +231,6 @@ def transcribe_deepgram(audio_bytes):
                         "words": words
                     }
         
-        # Apply Roman Urdu correction
         transcript = correct_roman_urdu(transcript)
         
         return {
@@ -255,7 +249,6 @@ def romanize_text(text):
         return ""
     if UNIDECODE_AVAILABLE:
         roman = unidecode(text)
-        # 👈 If romanization looks like gibberish (too short or random), return original
         if len(roman) < 3 or re.search(r'[^\w\s]', roman):
             return text
         return roman
@@ -289,7 +282,7 @@ def process_audio(audio_bytes):
                 if speaker.is_primary_speaker(frame):
                     suppressed = noise_gate.suppress(frame)
                     rms = np.sqrt(np.mean(suppressed.astype(np.float64) ** 2) + 1e-10)
-                    if rms > 150:  # 👈 LOWERED from 200 to 150
+                    if rms > 150:
                         processed.append(suppressed)
                     else:
                         processed.append(frame)
@@ -309,7 +302,7 @@ def process_audio(audio_bytes):
 # 🖥️ UI
 # ============================
 st.title("🎤 Mixed Language STT (Urdu + English)")
-st.caption("Fully corrected: low voice now transcribes correctly.")
+st.caption("Fully corrected: high confidence only, no hallucination.")
 
 show_roman = st.checkbox("Show Romanized text", value=True)
 
