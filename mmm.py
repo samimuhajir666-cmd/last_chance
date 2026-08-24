@@ -1,5 +1,5 @@
 """
-Urdu AI Agent – STT + Contextual Correction via Groq
+Urdu/Hindi Speech-to-Roman Agent – Direct Roman Output
 """
 import io
 import os
@@ -18,17 +18,11 @@ try:
 except ImportError:
     GROQ_AVAILABLE = False
 
-try:
-    from unidecode import unidecode
-    UNIDECODE_AVAILABLE = True
-except ImportError:
-    UNIDECODE_AVAILABLE = False
-
 load_dotenv()
 
 st.set_page_config(
-    page_title="Urdu AI Agent",
-    page_icon="🤖",
+    page_title="Roman STT Agent",
+    page_icon="🔤",
     layout="wide"
 )
 
@@ -134,7 +128,7 @@ class AdaptiveNoiseGate:
         return audio_chunk
 
 # ============================
-# 🎙️ DEEPGRAM TRANSCRIPTION
+# 🎙️ DEEPGRAM TRANSCRIPTION (ARABIC SCRIPT)
 # ============================
 def transcribe_deepgram(audio_bytes):
     params = [
@@ -167,13 +161,9 @@ def transcribe_deepgram(audio_bytes):
         words = alt.get("words", [])
         
         if confidence < 0.30:
-            return {
-                "text": "[audio unclear]",
-                "confidence": confidence,
-                "words": words
-            }
+            return {"text": "[audio unclear]", "confidence": confidence, "words": words}
         
-        # Basic word filter (keep only confident words)
+        # Basic filter (remove absolute gibberish)
         if words:
             filtered = []
             for w in words:
@@ -187,50 +177,41 @@ def transcribe_deepgram(audio_bytes):
                 transcript = " ".join(filtered)
                 transcript = re.sub(r'(\[inaudible\]\s*)+', '[inaudible]', transcript).strip()
                 if not transcript or transcript == "[inaudible]":
-                    return {
-                        "text": "[audio unclear]",
-                        "confidence": confidence,
-                        "words": words
-                    }
+                    return {"text": "[audio unclear]", "confidence": confidence, "words": words}
         
-        return {
-            "text": transcript,
-            "confidence": confidence,
-            "words": words
-        }
+        return {"text": transcript, "confidence": confidence, "words": words}
     except Exception:
         return None
 
 # ============================
-# 🤖 AGENT CORRECTION VIA GROQ (THE PROMPT YOU ASKED FOR)
+# 🤖 AGENT – Direct Roman Output (NO UNIDECODE, NO HARDCODE)
 # ============================
-def agent_correct(transcript, target_script="roman"):
+def agent_romanize_and_correct(arabic_transcript):
     """
-    Use Groq LLM to correct the transcript and convert to target script.
-    This is the 'brain' of the agent.
+    Takes Arabic-script transcription from Deepgram.
+    Outputs direct Roman Urdu/Hindi using Groq LLM.
     """
     if not GROQ_AVAILABLE or not GROQ_API_KEY:
-        return transcript  # fallback to raw
+        # Fallback: just remove Arabic letters (basic)
+        return re.sub(r'[\u0600-\u06FF]', '', arabic_transcript)
     
     try:
         client = Groq(api_key=GROQ_API_KEY)
         
-        # Build prompt based on target script
-        if target_script == "roman":
-            output_format = "Roman Urdu (Latin script), without diacritics."
-        else:
-            output_format = "Urdu script (Arabic script)."
-        
-        system_prompt = f"""You are an AI agent specialized in Urdu speech recognition correction.
-        Your task:
-        1. The user spoke in Urdu. The raw transcription may contain errors (misheard words, missing words, extra words).
-        2. Use the context to correct the transcription to what the user most likely said.
-        3. Do NOT invent new information – only correct obvious errors.
-        4. Output only the corrected transcription in {output_format}.
-        5. If the transcription is completely unclear, output "[audio unclear]".
-        """
+        system_prompt = """You are a Romanization expert for Urdu and Hindi.
 
-        user_prompt = f"Raw transcription: {transcript}\n\nCorrected transcription:"
+You will receive a transcription in Arabic script (Urdu/Hindi).
+Your ONLY job is to convert it to Roman script (Latin alphabet) – this is called Roman Urdu / Roman Hindi.
+Rules:
+1. Convert every word to natural Roman spelling (e.g., 'وہ' → 'woh', 'ہاں' → 'haan', 'سلام' → 'salaam').
+2. Correct any obvious misheard words based on the sentence context.
+3. Keep English words as they are (e.g., 'sir', 'hello').
+4. Do NOT invent new information – only convert and fix clear errors.
+5. Output ONLY the Romanized text – no explanations, no extra text.
+6. If the input is "[audio unclear]", output "[audio unclear]".
+"""
+
+        user_prompt = f"Arabic script transcript: {arabic_transcript}\n\nRomanized output:"
 
         response = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
@@ -242,32 +223,14 @@ def agent_correct(transcript, target_script="roman"):
             max_tokens=500,
         )
         
-        corrected = response.choices[0].message.content.strip()
-        # If the model returns empty, keep original
-        return corrected if corrected else transcript
+        roman = response.choices[0].message.content.strip()
+        return roman if roman else arabic_transcript
     except Exception:
-        # If anything fails, return original
-        return transcript
+        # Fallback – just strip Arabic
+        return re.sub(r'[\u0600-\u06FF]', '', arabic_transcript)
 
 # ============================
-# 🌐 ROMANIZATION (Fallback if no Groq)
-# ============================
-def romanize_text(arabic_script):
-    if not arabic_script:
-        return ""
-    if UNIDECODE_AVAILABLE:
-        roman = unidecode(arabic_script)
-        # fix known unidecode bug
-        roman = re.sub(r'\bwh\b', 'woh', roman, flags=re.IGNORECASE)
-        roman = re.sub(r'\bvoh\b', 'woh', roman, flags=re.IGNORECASE)
-        if len(roman) < 3 or re.search(r'[^\w\s]', roman):
-            return arabic_script
-        return roman
-    else:
-        return re.sub(r'[^a-zA-Z0-9 .,\'"?!]', '', arabic_script)
-
-# ============================
-# 🎛️ PROCESS AUDIO (SAME AS BEFORE)
+# 🎛️ PROCESS AUDIO
 # ============================
 def process_audio(audio_bytes):
     try:
@@ -310,12 +273,10 @@ def process_audio(audio_bytes):
 # ============================
 # 🖥️ UI
 # ============================
-st.title("🤖 Urdu AI Agent")
-st.caption("Transcribes + Corrects using Groq LLM – real intelligence.")
+st.title("🔤 Roman Urdu/Hindi STT Agent")
+st.caption("Speak Urdu/Hindi → Direct Roman Script Output (no Arabic script visible)")
 
-use_agent = st.checkbox("🧠 Enable Agent Correction (Groq)", value=GROQ_AVAILABLE and bool(GROQ_API_KEY))
-show_roman = st.checkbox("Show Romanized text", value=True)
-target_script = "roman" if show_roman else "arabic"
+use_agent = st.checkbox("🧠 Enable Agent Romanization (Groq)", value=GROQ_AVAILABLE and bool(GROQ_API_KEY))
 
 audio = mic_recorder(
     start_prompt="Start Speaking",
@@ -335,28 +296,19 @@ if audio and audio.get("bytes"):
             with st.spinner("Transcribing..."):
                 trans = transcribe_deepgram(processed["processed_bytes"])
                 if trans:
-                    raw = trans["text"]
+                    arabic = trans["text"]
                     confidence = trans["confidence"]
 
-                    # Apply agent correction if enabled
-                    if use_agent and raw != "[audio unclear]":
-                        with st.spinner("🤖 Agent correcting transcription..."):
-                            corrected = agent_correct(raw, target_script)
+                    if use_agent and arabic != "[audio unclear]":
+                        with st.spinner("🤖 Converting to Roman script..."):
+                            roman_output = agent_romanize_and_correct(arabic)
                     else:
-                        corrected = raw
-
-                    # Romanization (if not already done by agent)
-                    if show_roman and (not use_agent or target_script == "roman"):
-                        final_roman = romanize_text(corrected) if corrected != "[audio unclear]" else ""
-                        display_text = final_roman if final_roman else corrected
-                    else:
-                        display_text = corrected
+                        # Basic fallback: strip Arabic letters
+                        roman_output = re.sub(r'[\u0600-\u06FF]', '', arabic)
 
                     st.success("Done")
-                    st.write("**Raw Transcription:**")
-                    st.code(raw, language="text")
-                    st.write("**Final Output:**")
-                    st.code(display_text, language="text")
+                    st.write("**Final Roman Output:**")
+                    st.code(roman_output, language="text")
                     st.caption(f"Confidence: {confidence:.2f}")
                 else:
                     st.warning("No clear speech detected.")
